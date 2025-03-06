@@ -3,14 +3,23 @@ import session from 'express-session';
 import passport from 'passport';
 import bodyParser from 'body-parser';
 import { body, validationResult } from 'express-validator';
+import sql from 'mssql';
 import './auth'; // Import the Google OAuth configuration
+import dotenv from 'dotenv';
+dotenv.config();
 
 const app = express();
 
-// In-memory user store (use a database in production)
-const users: { email: string, password: string }[] = [
-  { email: 'onssbenamara3@gmail.com', password: '123456789' }
-];
+const dbConfig = {
+  user: process.env.DB_USER!,
+  password: process.env.DB_PASSWORD!,
+  server: process.env.DB_SERVER!,
+  database: process.env.DB_NAME!,
+  options: {
+    encrypt: true,
+    trustServerCertificate: true,
+  },
+};
 
 // Middleware to check if user is logged in
 function isLoggedIn(req: any, res: Response, next: NextFunction) {
@@ -22,9 +31,9 @@ function isLoggedIn(req: any, res: Response, next: NextFunction) {
 
 // Configure middleware
 app.use(bodyParser.urlencoded({ extended: false }));
-app.use(session({ 
+app.use(session({
   secret: 'cats',
-  resave: false, 
+  resave: false,
   saveUninitialized: true,
   cookie: {
     maxAge: 24 * 60 * 60 * 1000 // 24 hours
@@ -52,11 +61,12 @@ app.get('/', (req: Request, res: Response) => {
 
 // Google OAuth routes
 app.get('/auth/google',
-  passport.authenticate('google', { 
+  passport.authenticate('google', {
     scope: [
       'https://www.googleapis.com/auth/userinfo.email',
       'https://www.googleapis.com/auth/userinfo.profile'
-    ]
+    ],
+    prompt: 'select_account' // Add this line to prompt account selection
   })
 );
 
@@ -70,7 +80,7 @@ app.get('/auth/google/callback',
 // Protected route
 app.get('/protected', isLoggedIn, (req: any, res: Response) => {
   let displayName = 'User';
-  
+
   if (req.user) {
     if (req.user.displayName) {
       displayName = req.user.displayName;
@@ -82,7 +92,7 @@ app.get('/protected', isLoggedIn, (req: any, res: Response) => {
       displayName = req.user.email;
     }
   }
-  
+
   res.send(`
     <h1>Welcome, ${displayName}!</h1>
     <p>You are logged in successfully.</p>
@@ -91,12 +101,16 @@ app.get('/protected', isLoggedIn, (req: any, res: Response) => {
 });
 
 // Logout route
-app.get('/logout', (req: any, res: Response) => {
+app.get('/logout', (req: any, res: Response, next: NextFunction) => {
   req.logout((err: Error) => {
     if (err) {
-      return res.status(500).send('Error during logout');
+      return next(err);
     }
-    req.session.destroy(() => {
+    req.session.destroy((err: Error) => {
+      if (err) {
+        return next(err);
+      }
+      res.clearCookie('connect.sid', { path: '/' });
       res.redirect('/');
     });
   });
@@ -142,16 +156,17 @@ app.post('/login', [
   }
 
   const { email, password } = req.body;
-  
-  // Only allow login for the specific email
-  if (email !== 'onssbenamara3@gmail.com') {
-    res.status(401).send('Invalid email');
-    return;
-  }
 
-  // Find user
-  const user = users.find(user => user.email === email);
-  if (user) {
+  try {
+    await sql.connect(dbConfig);
+    const result = await sql.query`SELECT * FROM users WHERE email = ${email}`;
+    const user = result.recordset[0];
+
+    if (!user) {
+      res.status(404).send('User not found');
+      return;
+    }
+
     // In production, use bcrypt.compare here
     if (user.password === password) {
       req.login(user, (err: any) => {
@@ -166,9 +181,8 @@ app.post('/login', [
       res.status(401).send('Invalid password');
       return;
     }
-  } else {
-    res.status(404).send('User not found');
-    return;
+  } catch (err) {
+    next(err);
   }
 });
 

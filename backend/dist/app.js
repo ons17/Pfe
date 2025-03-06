@@ -17,12 +17,21 @@ const express_session_1 = __importDefault(require("express-session"));
 const passport_1 = __importDefault(require("passport"));
 const body_parser_1 = __importDefault(require("body-parser"));
 const express_validator_1 = require("express-validator");
-require("./auth"); // Google OAuth configuration file
+const mssql_1 = __importDefault(require("mssql"));
+require("./auth"); // Import the Google OAuth configuration
+const dotenv_1 = __importDefault(require("dotenv"));
+dotenv_1.default.config();
 const app = (0, express_1.default)();
-// This will hold users for the purpose of this example. In a production environment, use a database.
-const users = [
-    { email: 'onsbenamara170@gmail.com', password: 'your_password_here' }, // Replace with actual user data
-];
+const dbConfig = {
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    server: process.env.DB_SERVER,
+    database: process.env.DB_NAME,
+    options: {
+        encrypt: true,
+        trustServerCertificate: true,
+    },
+};
 // Middleware to check if user is logged in
 function isLoggedIn(req, res, next) {
     if (req.isAuthenticated()) {
@@ -30,43 +39,95 @@ function isLoggedIn(req, res, next) {
     }
     res.redirect('/login');
 }
+// Configure middleware
 app.use(body_parser_1.default.urlencoded({ extended: false }));
-app.use((0, express_session_1.default)({ secret: 'cats', resave: false, saveUninitialized: true }));
+app.use((0, express_session_1.default)({
+    secret: 'cats',
+    resave: false,
+    saveUninitialized: true,
+    cookie: {
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    }
+}));
 app.use(passport_1.default.initialize());
 app.use(passport_1.default.session());
-// Home route with links for Google login and manual login
-app.get('/', (req, res) => {
-    res.send('<a href="/auth/google">Authenticate with Google</a> <br> <a href="/login">Login</a>');
+// Add debug middleware to see session and user info
+app.use((req, res, next) => {
+    console.log('Session:', req.session);
+    console.log('User:', req.user);
+    console.log('Authenticated:', req.isAuthenticated());
+    next();
 });
-// Google OAuth authentication
-app.get('/auth/google', passport_1.default.authenticate('google', { scope: ['email', 'profile'] }));
+// Home route
+app.get('/', (req, res) => {
+    res.send(`
+    <h1>Authentication Demo</h1>
+    <a href="/auth/google">Authenticate with Google</a> <br>
+    <a href="/login">Login with Email/Password</a>
+  `);
+});
+// Google OAuth routes
+app.get('/auth/google', passport_1.default.authenticate('google', {
+    scope: [
+        'https://www.googleapis.com/auth/userinfo.email',
+        'https://www.googleapis.com/auth/userinfo.profile'
+    ],
+    prompt: 'select_account' // Add this line to prompt account selection
+}));
 app.get('/auth/google/callback', passport_1.default.authenticate('google', {
     successRedirect: '/protected',
     failureRedirect: '/auth/google/failure'
 }));
-// Protected route only accessible by authenticated users
+// Protected route
 app.get('/protected', isLoggedIn, (req, res) => {
-    const displayName = req.user.displayName || req.user.email;
-    res.send(`Hello ${displayName}`);
+    let displayName = 'User';
+    if (req.user) {
+        if (req.user.displayName) {
+            displayName = req.user.displayName;
+        }
+        else if (req.user.name) {
+            displayName = req.user.name;
+        }
+        else if (req.user.emails && req.user.emails[0]) {
+            displayName = req.user.emails[0].value;
+        }
+        else if (req.user.email) {
+            displayName = req.user.email;
+        }
+    }
+    res.send(`
+    <h1>Welcome, ${displayName}!</h1>
+    <p>You are logged in successfully.</p>
+    <a href="/logout">Logout</a>
+  `);
 });
 // Logout route
-app.get('/logout', (req, res) => {
+app.get('/logout', (req, res, next) => {
     req.logout((err) => {
         if (err) {
-            return res.status(500).send('Error during logout');
+            return next(err);
         }
-        req.session.destroy(() => {
-            res.send('Goodbye!');
+        req.session.destroy((err) => {
+            if (err) {
+                return next(err);
+            }
+            res.clearCookie('connect.sid', { path: '/' });
+            res.redirect('/');
         });
     });
 });
 // Google authentication failure
 app.get('/auth/google/failure', (req, res) => {
-    res.send('Failed to authenticate or you are not authorized to access this application.');
+    res.send(`
+    <h1>Authentication Failed</h1>
+    <p>Failed to authenticate or you are not authorized to access this application.</p>
+    <a href="/">Back to Home</a>
+  `);
 });
 // Login form route
 app.get('/login', (req, res) => {
     res.send(`
+    <h1>Login</h1>
     <form action="/login" method="post">
       <div>
         <label>Email:</label>
@@ -78,9 +139,10 @@ app.get('/login', (req, res) => {
       </div>
       <button type="submit">Login</button>
     </form>
+    <p>Or <a href="/auth/google">Sign in with Google</a></p>
   `);
 });
-// POST login handler with email/password check
+// POST login handler
 app.post('/login', [
     (0, express_validator_1.body)('email').isEmail().withMessage('Invalid email format'),
     (0, express_validator_1.body)('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
@@ -91,19 +153,19 @@ app.post('/login', [
         return;
     }
     const { email, password } = req.body;
-    // Only allow login for 'onsbenamara170@gmail.com'
-    if (email !== 'onsbenamara170@gmail.com') {
-        res.status(401).send('Invalid email');
-        return;
-    }
-    // Simulating user lookup from the database
-    const user = users.find(user => user.email === email);
-    if (user) {
-        // Compare passwords (in real applications, you should hash passwords)
-        if (user.password === password) { // This should be a bcrypt comparison in production
+    try {
+        yield mssql_1.default.connect(dbConfig);
+        const result = yield mssql_1.default.query `SELECT * FROM users WHERE email = ${email}`;
+        const user = result.recordset[0];
+        if (!user) {
+            res.status(404).send('User not found');
+            return;
+        }
+        // In production, use bcrypt.compare here
+        if (user.password === password) {
             req.login(user, (err) => {
                 if (err) {
-                    next(err); // Pass async errors to Express error handling
+                    next(err);
                     return;
                 }
                 res.redirect('/protected');
@@ -115,9 +177,8 @@ app.post('/login', [
             return;
         }
     }
-    else {
-        res.status(404).send('User not found');
-        return;
+    catch (err) {
+        next(err);
     }
 }));
 // Starting the server

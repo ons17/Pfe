@@ -1,9 +1,9 @@
 import passport from 'passport';
-import { Strategy as GoogleStrategy } from 'passport-google-oauth2';
+import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 
 // Google OAuth2 credentials
 const GOOGLE_CLIENT_ID = '17543999702-hf3su5dua5q1fuhfmeth5a6mgtf2acce.apps.googleusercontent.com';
-const GOOGLE_CLIENT_SECRET = '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';
+const GOOGLE_CLIENT_SECRET = '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';
 
 // Configure the Google strategy for Passport
 passport.use(new GoogleStrategy({
@@ -29,13 +29,12 @@ function(request: any, accessToken: string, refreshToken: string, profile: any, 
 }));
 
 // Serialize user to store in session
-passport.serializeUser((user: any, done: Function) => {
+passport.serializeUser((user, done) => {
   done(null, user);
 });
 
-// Deserialize user from session
-passport.deserializeUser((user: any, done: Function) => {
-  done(null, user);
+passport.deserializeUser((obj: any, done) => {
+  done(null, obj);
 });
 
 export default passport;
